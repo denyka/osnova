@@ -1,0 +1,11 @@
+# .hadolint.yaml — every rule on; untagged and latest images, root, and
+# unpinned package installs are errors.
+failure-threshold: warning
+override:
+  error:
+    - DL3006
+    - DL3007
+    - DL3002
+    - DL3008
+    - DL3013
+    - DL3018

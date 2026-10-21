@@ -1,0 +1,7 @@
+misconfigurations:
+  - id: AVD-DS-0002
+    # Paths are relative to the scan target `images`.
+    paths:
+      - el/Dockerfile
+      - deb/Dockerfile
+    statement: An init image runs as root by design (SPEC 14); no USER instruction.

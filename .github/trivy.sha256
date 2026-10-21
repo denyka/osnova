@@ -1,0 +1,5 @@
+# Trivy, the one place its version lives (SPEC 8.9): sha256 of each release tarball,
+# hashed from the download and cross-checked against the release's checksums file.
+TRIVY_VERSION=0.76.0
+TRIVY_SHA256_AMD64=e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7
+TRIVY_SHA256_ARM64=aab21e677a7b7071fc79f1711480840754c18a1b9d9cefa7ccd06af63a0e8f4c

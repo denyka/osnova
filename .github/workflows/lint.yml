@@ -1,0 +1,132 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pre-commit:
+    name: pre-commit + make test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0   # full history: the gitleaks history scan needs it
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      # zsh is absent on the runner; without it the zsh-syntax hook skips.
+      # Only repositories that carry zsh files need it.
+      - name: Install zsh
+        if: hashFiles('**/*.zsh') != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends zsh
+
+      # The terraform hooks shell out to tflint, terraform-docs and trivy; the
+      # runner ships only Terraform. Installed where Terraform files exist,
+      # pinned, and verified against the sha256 values carried in
+      # .github/tools.sha256, recorded when the pin was set (SPEC 11.2).
+      - name: Set up tflint
+        if: hashFiles('**/*.tf') != ''
+        uses: terraform-linters/setup-tflint@6ffdbaa3be476b3431f7275c26966ef32ff60337 # v6.3.2
+        with:
+          tflint_version: v0.61.0
+
+      - name: Install terraform-docs and trivy
+        if: hashFiles('**/*.tf') != ''
+        env:
+          TFDOCS_VERSION: v0.24.0
+          TRIVY_VERSION: 0.76.0
+        run: |
+          set -eu
+          cd "$(mktemp -d)"
+          base=https://github.com/terraform-docs/terraform-docs/releases/download/${TFDOCS_VERSION}
+          curl -fsSLO --proto '=https' "${base}/terraform-docs-${TFDOCS_VERSION}-linux-amd64.tar.gz"
+          base=https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}
+          curl -fsSLO --proto '=https' "${base}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          sha256sum --check --strict --ignore-missing "${GITHUB_WORKSPACE}/.github/tools.sha256"
+          tar -xzf "terraform-docs-${TFDOCS_VERSION}-linux-amd64.tar.gz" terraform-docs
+          tar -xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
+          sudo install -m 0755 terraform-docs trivy /usr/local/bin/
+
+      # The hadolint hook shells out to a binary the runner lacks; HQ installs
+      # it only in its bake workflow, which this repository does not carry
+      # (SPEC 14). Installed where a Dockerfile exists, pinned, and verified
+      # against the sha256 carried in .github/tools.sha256.
+      - name: Install hadolint
+        if: hashFiles('**/Dockerfile') != ''
+        env:
+          HADOLINT_VERSION: v2.15.1
+        run: |
+          set -eu
+          cd "$(mktemp -d)"
+          base=https://github.com/hadolint/hadolint/releases/download/${HADOLINT_VERSION}
+          curl -fsSLO --proto '=https' "${base}/hadolint-Linux-x86_64"
+          sha256sum --check --strict --ignore-missing "${GITHUB_WORKSPACE}/.github/tools.sha256"
+          sudo install -m 0755 hadolint-Linux-x86_64 /usr/local/bin/hadolint
+
+      - name: Install pre-commit
+        run: python -m pip install --require-hashes -r .github/requirements.txt
+
+      # The tests hook is skipped here: the suites run once, in the last step.
+      - name: Run every hook on every file
+        env:
+          SKIP: tests
+        run: pre-commit run --all-files --show-diff-on-failure
+
+      # Not --staged: the commit-time hook sees nothing in CI, these do.
+      - name: gitleaks full history
+        run: pre-commit run gitleaks_history --hook-stage manual --all-files
+
+      - name: gitleaks working tree
+        run: pre-commit run gitleaks_tree --hook-stage manual --all-files
+
+      # A frozen rev must be the commit a tag points to: pre-commit also
+      # accepts the annotated tag object's SHA, which is not what
+      # `autoupdate --freeze` records and not what the version comment names.
+      # The fleet pre-commit fragments carry the same kind of pin and are read too.
+      # shell: bash adds pipefail, so a failing stage of the pipeline fails the step.
+      - name: Hook revisions are commit SHAs
+        shell: bash
+        run: |
+          set -eu
+          shopt -s nullglob
+          cat .pre-commit-config.yaml .claude/skills/_std_*/templates/pre_commit_*.yaml.fragment \
+          | awk '/^  - repo: [a-z+]+:\/\//{repo=$3} /^    rev: /{print repo, $2}' \
+          | while read -r repo rev; do
+              if ! tags="$(git ls-remote --tags "${repo}")"; then
+                echo "::error::${repo} unreachable, rev ${rev} unverified"
+                exit 1
+              fi
+              if printf '%s\n' "${tags}" \
+                 | awk -v r="${rev}" '
+                     { sha[$2] = $1 }
+                     END {
+                       for (t in sha)
+                         if (sha[t] == r && t !~ /\^\{\}$/ && ((t "^{}") in sha)) exit 0
+                       exit 1
+                     }'; then
+                echo "::error::${repo} rev ${rev} is an annotated tag object, not the commit"
+                exit 1
+              fi
+              echo "commit: ${repo} ${rev}"
+            done
+
+      - name: Run test suites
+        run: make test

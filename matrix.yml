@@ -1,0 +1,23 @@
+---
+# The image matrix (SPEC 6.1): name, family and base tag, nothing more. The
+# base digest is a build-time input resolved by tools/resolve_bases.sh and
+# recorded with the release; it never lives here.
+images:
+  - name: almalinux9
+    family: el
+    base: almalinux:9-minimal
+  - name: almalinux10
+    family: el
+    base: almalinux:10-minimal
+  - name: debian12
+    family: deb
+    base: debian:12-slim
+  - name: debian13
+    family: deb
+    base: debian:13-slim
+  - name: ubuntu2404
+    family: deb
+    base: ubuntu:24.04
+  - name: ubuntu2604
+    family: deb
+    base: ubuntu:26.04

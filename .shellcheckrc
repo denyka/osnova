@@ -1,0 +1,5 @@
+# Applied automatically when shellcheck runs from the repo root.
+# SC1091: sourced files under ${HOME} do not resolve in CI.
+disable=SC1091
+# SC2034: source-guard variables (readonly __X_LOADED=1) look unused.
+disable=SC2034

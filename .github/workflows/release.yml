@@ -1,0 +1,518 @@
+---
+name: release
+
+# The unattended dated release (SPEC 8): monthly, on the watch's dispatch,
+# or by hand. One build job per architecture; publish, release and retain
+# once over all images. A failed step publishes nothing and opens an issue.
+on:
+  schedule:
+    - cron: '17 4 1 * *'
+  workflow_dispatch:
+
+# Never cancel a publish: a half-published set would leave an image with a
+# moved latest and a missing architecture (SPEC 8.8).
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io/denyka/osnova
+  # The signing identity every verification names (SPEC 8.5).
+  COSIGN_ISSUER: https://token.actions.githubusercontent.com
+  COSIGN_IDENTITY: '^https://github\.com/denyka/osnova/\.github/workflows/release\.yml@refs/heads/main$'
+
+jobs:
+  prepare:
+    name: prepare
+    # A release is built from main only; the signed identity is
+    # release.yml@refs/heads/main. Every other job needs prepare, so a run
+    # from another branch is skipped whole and opens no issue.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Read only: the registry check below looks for an orphan dated tag.
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      created: ${{ steps.tag.outputs.created }}
+      source_date_epoch: ${{ steps.tag.outputs.source_date_epoch }}
+      bases: ${{ steps.resolve.outputs.bases }}
+      bases_json: ${{ steps.resolve.outputs.bases_json }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      # The tag is the UTC date; a tag that already exists ends the run here (SPEC 8.2).
+      # tag_exists answers 0 (exists) or 1 (absent); anything else is a failure.
+      # created and its epoch are fixed here once, so a re-run of failed jobs rebuilds
+      # the same labels, configs and indexes (SPEC 8.3 step 1).
+      - name: The dated tag
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          epoch="$(date -u +%s)"
+          tag="$(date -u -d "@${epoch}" +%Y.%m.%d)"
+          created="$(date -u -d "@${epoch}" +%Y-%m-%dT%H:%M:%SZ)"
+          rc=0
+          bash tools/release_notes.sh tag_exists --tag "${tag}" || rc=$?
+          case "${rc}" in
+            0) printf '::error::v%s already exists; one release per day\n' "${tag}"; exit 1 ;;
+            1) ;;
+            *) printf '::error::cannot check the git tags (tag_exists exited %s)\n' "${rc}"; exit 1 ;;
+          esac
+          {
+            printf 'tag=%s\n' "${tag}"
+            printf 'created=%s\n' "${created}"
+            printf 'source_date_epoch=%s\n' "${epoch}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Once per run: the index digest and the per-architecture digests of every base.
+      - name: Resolve the bases
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          json="$(bash tools/resolve_bases.sh --json)"
+          jq -e 'length > 0' <<<"${json}" >/dev/null || { printf '::error::no bases resolved\n'; exit 1; }
+          {
+            printf 'bases<<EOF\n'
+            jq -r '.[] | "BASE_\(.name | ascii_upcase)=\(.base)@\(.base_digest)"' <<<"${json}"
+            printf 'EOF\n'
+            printf 'bases_json=%s\n' "$(jq -c . <<<"${json}")"
+          } >> "${GITHUB_OUTPUT}"
+
+      # A dated tag already on the registry is an earlier failed run's orphan.
+      # Tags are immutable (SPEC 8.2): this run refuses rather than rebinding it.
+      # A package that does not exist yet is absent through the Packages API; then
+      # only "no such tag" means absent, and any other failure refuses the run.
+      - name: Refuse an existing dated tag on the registry
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          BASES_JSON: ${{ steps.resolve.outputs.bases_json }}
+        run: |
+          set -euo pipefail
+          names="$(jq -r '.[].name' <<<"${BASES_JSON}")"
+          [[ -n "${names}" ]] || { printf '::error::no image names to check\n'; exit 1; }
+          while read -r name; do
+            if ! gh api "/users/denyka/packages/container/osnova%2F${name}" >/dev/null 2>err.txt; then
+              if grep -q 'HTTP 404' err.txt; then
+                printf '%s: no package yet\n' "${name}"
+                continue
+              fi
+              printf '::error::cannot check the package of %s: ' "${name}"; cat err.txt
+              exit 1
+            fi
+            ref="${REGISTRY}/${name}:${TAG}"
+            if docker buildx imagetools inspect "${ref}" >/dev/null 2>err.txt; then
+              printf '::error::%s already exists on the registry; %s\n' "${ref}" \
+                're-run the failed jobs of that run or wait for tomorrow'
+              exit 1
+            elif ! grep -qE ': not found$|MANIFEST_UNKNOWN' err.txt; then
+              printf '::error::cannot check %s: ' "${ref}"; cat err.txt
+              exit 1
+            fi
+          done <<<"${names}"
+
+  build:
+    name: build (${{ matrix.platform }})
+    needs: [prepare]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    env:
+      OSNOVA_VERSION: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+
+      # No login in this job: the composite logs in after the scan and boot,
+      # in publish mode only (SPEC 4.1, 8.3 step 5).
+      - name: Build, scan, boot, push by digest
+        id: verify
+        uses: ./.github/actions/build_and_verify
+        with:
+          platform: ${{ matrix.platform }}
+          bases: ${{ needs.prepare.outputs.bases }}
+          mode: publish
+          cache: 'false'
+          created: ${{ needs.prepare.outputs.created }}
+          source_date_epoch: ${{ needs.prepare.outputs.source_date_epoch }}
+          registry_username: ${{ github.actor }}
+          registry_password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Save the digests
+        shell: bash
+        env:
+          DIGESTS: ${{ steps.verify.outputs.digests }}
+          ARCH: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          mkdir -p digests
+          printf '%s\n' "${DIGESTS}" | jq . > "digests/${ARCH##*/}.json"
+
+      # Seven days: the window in which a re-run of the failed jobs has its inputs (SPEC 8.10).
+      - name: Upload the digests
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: digests-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+          path: digests/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: publish
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the amd64 digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests-amd64
+          path: digests
+
+      - name: Download the arm64 digests
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: digests-arm64
+          path: digests
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # Per image: one index from the two digests, tagged with the date only
+      # (latest moves last, in promote) and annotated with the OCI labels of
+      # SPEC 6.5; the index digest is what a tag resolves to, so it is what is
+      # signed, in the legacy tag form, and verified at once (SPEC 8.3 step 6).
+      - name: Create, tag, sign and verify the indexes
+        shell: bash
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          CREATED: ${{ needs.prepare.outputs.created }}
+          BASES_JSON: ${{ needs.prepare.outputs.bases_json }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          [[ -n "${CREATED}" ]] || { printf '::error::prepare gave no created time\n'; exit 1; }
+          printf '%s' "${BASES_JSON}" > bases.json
+          printf '{}' > index_digests.json
+          : > subjects.txt
+          list="$(bash tools/resolve_bases.sh --list)"
+          [[ -n "${list}" ]] || { printf '::error::no bases resolved\n'; exit 1; }
+          while read -r name family _base; do
+            amd64="$(jq -r --arg n "${name}" '.[$n]' digests/amd64.json)"
+            arm64="$(jq -r --arg n "${name}" '.[$n]' digests/arm64.json)"
+            [[ "${amd64}" =~ ^sha256: && "${arm64}" =~ ^sha256: ]] ||
+              { printf '::error::missing digest for %s\n' "${name}"; exit 1; }
+            # the family description the Dockerfile labels the image with
+            description="$(sed -n 's/^LABEL org\.opencontainers\.image\.description="\([^"]*\)".*/\1/p' \
+              "images/${family}/Dockerfile")"
+            [[ -n "${description}" ]] ||
+              { printf '::error::no description in images/%s/Dockerfile\n' "${family}"; exit 1; }
+            image="${REGISTRY}/${name}"
+            url="https://github.com/denyka/osnova/pkgs/container/osnova%2F${name}"
+            docker buildx imagetools create --tag "${image}:${TAG}" \
+              --annotation "index:org.opencontainers.image.title=${name}" \
+              --annotation "index:org.opencontainers.image.description=${description}" \
+              --annotation "index:org.opencontainers.image.source=https://github.com/denyka/osnova" \
+              --annotation "index:org.opencontainers.image.url=${url}" \
+              --annotation "index:org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --annotation "index:org.opencontainers.image.created=${CREATED}" \
+              --annotation "index:org.opencontainers.image.version=${TAG}" \
+              "${image}@${amd64}" "${image}@${arm64}"
+            index="$(docker buildx imagetools inspect "${image}:${TAG}" \
+              --format '{{.Manifest.Digest}}')"
+            [[ "${index}" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+              { printf '::error::%s:%s has no index digest\n' "${image}" "${TAG}"; exit 1; }
+            # The legacy tag form (sha256-<digest>.sig beside the image) is the model
+            # retention and SPEC 8.7 rely on; cosign 3 defaults to OCI referrers.
+            cosign sign --yes --new-bundle-format=false --use-signing-config=false "${image}@${index}"
+            cosign verify --certificate-oidc-issuer "${COSIGN_ISSUER}" \
+              --certificate-identity-regexp "${COSIGN_IDENTITY}" "${image}@${index}" >/dev/null
+            # one attestation subject per index, attested after the loop
+            printf '%s  %s\n' "${index#sha256:}" "${image}" >> subjects.txt
+            jq --arg n "${name}" --arg d "${index}" '. + {($n): $d}' index_digests.json > tmp.json &&
+              mv tmp.json index_digests.json
+          done <<<"${list}"
+          bash tools/release_notes.sh record --tag "${TAG}" --commit "${GITHUB_SHA}" --run "${RUN_URL}" \
+            --bases bases.json --digests index_digests.json > record.json
+
+      # A GitHub artifact attestation on every index digest, held by GitHub and
+      # checked with gh attestation verify oci://<image>:<tag> (SPEC 8.4).
+      - name: Attest the indexes
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: subjects.txt
+          push-to-registry: false
+
+      - name: Upload the record
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: record
+          path: record.json
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    name: release
+    needs: [prepare, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download the record
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: record
+          path: .
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      # The record is signed as a blob by the same identity and verified at once;
+      # gh release create makes the git tag on the built commit and attaches both
+      # files (SPEC 8.3 step 7).
+      - name: Sign the record, tag and release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes --bundle record.json.sigstore.json record.json
+          cosign verify-blob --certificate-oidc-issuer "${COSIGN_ISSUER}" \
+            --certificate-identity-regexp "${COSIGN_IDENTITY}" \
+            --bundle record.json.sigstore.json record.json
+          bash tools/release_notes.sh notes record.json > notes.md
+          gh release create "v${TAG}" --target "${GITHUB_SHA}" --title "v${TAG}" --notes-file notes.md \
+            record.json record.json.sigstore.json
+
+  # latest moves only after the release exists (SPEC 8.6), to exactly the
+  # signed index digest the record carries, once its signature verifies.
+  promote:
+    name: promote latest
+    needs: [prepare, release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Download the record
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: record
+          path: .
+
+      - name: Move latest to the signed indexes
+        shell: bash
+        run: |
+          set -euo pipefail
+          pairs="$(jq -r '.images[] | "\(.image) \(.digest)"' record.json)"
+          [[ -n "${pairs}" ]] || { printf '::error::the record lists no images\n'; exit 1; }
+          while read -r image digest; do
+            cosign verify --certificate-oidc-issuer "${COSIGN_ISSUER}" \
+              --certificate-identity-regexp "${COSIGN_IDENTITY}" "${image}@${digest}" >/dev/null
+            docker buildx imagetools create --tag "${image}:latest" "${image}@${digest}"
+            landed="$(docker buildx imagetools inspect "${image}:latest" --format '{{.Manifest.Digest}}')"
+            [[ "${landed}" == "${digest}" ]] ||
+              { printf '::error::%s:latest is %s, not the recorded %s\n' "${image}" "${landed}" "${digest}"; exit 1; }
+          done <<<"${pairs}"
+
+  retain:
+    name: retain
+    needs: [promote]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+
+      # SPEC 8.7: the dated tags a release names are the ones the floor keeps.
+      - name: Apply retention per image
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release list --repo "${REPO}" --limit 1000 --json tagName --jq '.[].tagName' | sed 's/^v//' > released.txt
+          [[ -s released.txt ]] || { printf '::error::no release listed\n'; exit 1; }
+          list="$(bash tools/resolve_bases.sh --list)"
+          [[ -n "${list}" ]] || { printf '::error::no bases resolved\n'; exit 1; }
+          while read -r name _family _base; do
+            bash tools/retain.sh --owner denyka --package "osnova/${name}" \
+              --keep 5 --max-age-days 90 --released released.txt
+          done <<<"${list}"
+
+  failed:
+    name: report a failed release
+    needs: [prepare, build, publish, release, promote, retain]
+    if: failure()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # actions: read lists the run's jobs, to name the failing step.
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      # The state each failing job leaves, as SPEC 8.6 states it.
+      - name: Open or update the release-failed issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          R_PREPARE: ${{ needs.prepare.result }}
+          R_BUILD: ${{ needs.build.result }}
+          R_PUBLISH: ${{ needs.publish.result }}
+          R_RELEASE: ${{ needs.release.result }}
+          R_PROMOTE: ${{ needs.promote.result }}
+          R_RETAIN: ${{ needs.retain.result }}
+        run: |
+          set -euo pipefail
+          failed_jobs=""
+          for pair in prepare:"${R_PREPARE}" build:"${R_BUILD}" publish:"${R_PUBLISH}" \
+            release:"${R_RELEASE}" promote:"${R_PROMOTE}" retain:"${R_RETAIN}"; do
+            [[ "${pair#*:}" == failure ]] && failed_jobs="${failed_jobs:+${failed_jobs}, }${pair%%:*}"
+          done
+          if [[ "${R_PREPARE}" == failure || "${R_BUILD}" == failure ]]; then
+            effect="nothing was published; the registry still serves the previous release and latest did not move"
+          elif [[ "${R_PUBLISH}" == failure ]]; then
+            effect="the dated tags created so far remain, each signed and verified before the next was made,"
+            effect="${effect} at most one of them unsigned; no release names them and latest did not move"
+          elif [[ "${R_RELEASE}" == failure ]]; then
+            effect="signed dated tags remain and no release names them; latest did not move"
+          elif [[ "${R_PROMOTE}" == failure ]]; then
+            effect="the release exists; latest may have moved for some images, each to a verified index"
+          elif [[ "${R_RETAIN}" == failure ]]; then
+            effect="everything was published; retention stopped before it finished"
+          else
+            effect="nothing was published; the registry still serves the previous release and latest did not move"
+          fi
+          effect="${effect}; re-run the failed jobs to complete the release from where it stopped"
+          # the failing step of each failed job, "<job>: <step>"; a failed listing
+          # still opens the issue, naming the steps unknown
+          # shellcheck disable=SC2016 # $j is a jq variable
+          steps="$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs" --paginate --jq '
+            .jobs[] | select(.conclusion=="failure") | .name as $j | .steps[] | select(.conclusion=="failure")
+            | "\($j): \(.name)"' | paste -sd';' - | sed 's/;/; /g')" || steps=""
+          body="The release run failed (failed jobs: ${failed_jobs:-none}; failing steps: ${steps:-unknown});"
+          body="${body} ${effect}. Run: ${RUN_URL}"
+          existing="$(gh issue list --repo "${REPO}" --label release-failed --state open \
+            --json number --jq '.[0].number // empty')"
+          if [[ -n "${existing}" ]]; then
+            gh issue comment "${existing}" --repo "${REPO}" --body "${body}"
+          else
+            gh label create release-failed --repo "${REPO}" --color B60205 \
+              --description "an unattended release failed" --force
+            gh issue create --repo "${REPO}" --title "release failed" --label release-failed --body "${body}"
+          fi

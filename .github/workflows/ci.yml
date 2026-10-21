@@ -1,0 +1,129 @@
+---
+name: ci
+
+# The image gate (SPEC 10): per architecture on its native runner, resolve,
+# bake, Trivy, smoke; nothing pushed. Runs on every pull request; the
+# changes job skips verify at job level when only documentation changed, and
+# a draft runs lint alone until marked ready (SPEC 8.10). No path filter: a
+# required check from a filtered workflow stays pending.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+
+# A newer push to a pull request supersedes the older run; a push to main
+# seeds the layer cache and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      draft: ${{ steps.classify.outputs.draft }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify the change
+        id: classify
+        shell: bash
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_DRAFT: ${{ github.event.pull_request.draft }}
+        run: bash .github/ci_changes.sh
+
+  # Two plain jobs, never a matrix (SPEC 8.10): a matrix job skipped at job
+  # level never expands, so its required checks would stay pending.
+  verify_amd64:
+    name: verify (linux/amd64)
+    needs: [changes]
+    if: needs.changes.outputs.draft != 'true' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # BuildKit writes the provenance, so its image is pinned too (SPEC 8.9).
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+
+      - name: Resolve the bases
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            printf 'bases<<EOF\n'
+            bash tools/resolve_bases.sh
+            printf 'EOF\n'
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build, scan and boot
+        uses: ./.github/actions/build_and_verify
+        with:
+          platform: linux/amd64
+          bases: ${{ steps.resolve.outputs.bases }}
+          mode: verify
+          cache: 'true'
+
+      # Dockerfile misconfiguration scan, once; the image scan ran per image above.
+      # Trivy is installed by the composite action above, hence the order. Trivy
+      # does not load the YAML ignore file on its own, so the scan names it.
+      - name: Configuration scan
+        shell: bash
+        run: trivy config --ignorefile .trivyignore.yaml --exit-code 1 --severity HIGH,CRITICAL images
+
+  verify_arm64:
+    name: verify (linux/arm64)
+    needs: [changes]
+    if: needs.changes.outputs.draft != 'true' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # BuildKit writes the provenance, so its image is pinned too (SPEC 8.9).
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver-opts: image=moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+
+      - name: Resolve the bases
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            printf 'bases<<EOF\n'
+            bash tools/resolve_bases.sh
+            printf 'EOF\n'
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build, scan and boot
+        uses: ./.github/actions/build_and_verify
+        with:
+          platform: linux/arm64
+          bases: ${{ steps.resolve.outputs.bases }}
+          mode: verify
+          cache: 'true'

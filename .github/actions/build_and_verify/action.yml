@@ -1,0 +1,276 @@
+---
+name: build_and_verify
+description: >
+  The steps ci.yml and release.yml share (SPEC 10): resolve-provided bases,
+  per image bake (loaded), Trivy gate, smoke suite; in publish mode log in,
+  push by digest with SBOM and provenance, and assert the pushed image is the
+  scanned one.
+inputs:
+  platform:
+    description: linux/amd64 or linux/arm64, the runner's own
+    required: true
+  bases:
+    description: the lines tools/resolve_bases.sh printed (BASE_<NAME>=<tag>@<digest>)
+    required: true
+  mode:
+    description: verify (load, scan, boot) or publish (the same, then push by digest)
+    required: true
+  cache:
+    description: "'true' to use the GitHub Actions layer cache (the gate), 'false' never (the release)"
+    required: false
+    default: 'false'
+  registry:
+    description: image path prefix
+    required: false
+    default: ghcr.io/denyka/osnova
+  created:
+    description: the run's created time, RFC 3339 UTC (the release passes prepare's); empty means now
+    required: false
+    default: ''
+  source_date_epoch:
+    description: the epoch of created; given together with created or not at all
+    required: false
+    default: ''
+  registry_username:
+    description: publish mode, the registry user the push logs in as
+    required: false
+    default: ''
+  registry_password:
+    description: >-
+      publish mode, the registry token, used for the login from the push on
+      (SPEC 8.3 step 5); the job token itself exists for the whole job (SPEC 4.2)
+    required: false
+    default: ''
+outputs:
+  digests:
+    description: publish mode, JSON object of image name to pushed digest
+    value: ${{ steps.digests.outputs.digests }}
+runs:
+  using: composite
+  steps:
+    # Version and sha256 per architecture come from the tree (SPEC 8.9); only the
+    # tarball is downloaded, so the release page cannot vouch for its own binary.
+    - name: Install Trivy (pinned, sha256-verified)
+      shell: bash
+      env:
+        PLATFORM: ${{ inputs.platform }}
+      run: |
+        set -euo pipefail
+        . .github/trivy.sha256
+        case "${PLATFORM}" in
+          linux/amd64) asset="Linux-64bit"; sha="${TRIVY_SHA256_AMD64}" ;;
+          linux/arm64) asset="Linux-ARM64"; sha="${TRIVY_SHA256_ARM64}" ;;
+          *) printf 'unsupported platform %s\n' "${PLATFORM}" >&2; exit 1 ;;
+        esac
+        tarball="trivy_${TRIVY_VERSION}_${asset}.tar.gz"
+        cd "$(mktemp -d)"
+        curl -fsSLO --proto '=https' \
+          "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${tarball}"
+        printf '%s  %s\n' "${sha}" "${tarball}" | sha256sum --check --strict -
+        tar -xzf "${tarball}" trivy
+        sudo install -m 0755 trivy /usr/local/bin/trivy
+        trivy --version
+
+    - name: Export the resolved bases and the bake variables
+      shell: bash
+      env:
+        BASES: ${{ inputs.bases }}
+        PLATFORM: ${{ inputs.platform }}
+        REGISTRY: ${{ inputs.registry }}
+        MODE: ${{ inputs.mode }}
+        INPUT_CREATED: ${{ inputs.created }}
+        INPUT_EPOCH: ${{ inputs.source_date_epoch }}
+      run: |
+        set -euo pipefail
+        # every line is BASE_<NAME>=<tag>@sha256:<64 hex>; anything else is a resolver bug
+        re='^BASE_[A-Z0-9]+=[a-z0-9.-]+:[a-z0-9.-]+@sha256:[0-9a-f]{64}$'
+        while IFS= read -r line; do
+          [[ -z "${line}" ]] && continue
+          [[ "${line}" =~ ${re} ]] || { printf 'bad base line: %s\n' "${line}" >&2; exit 1; }
+          printf '%s\n' "${line}" >> "${GITHUB_ENV}"
+        done <<<"${BASES}"
+        # one set of values for both bakes, so the verified and the pushed image agree;
+        # SOURCE_DATE_EPOCH is CREATED's epoch, so both bakes write the same image config.
+        # The release passes the run's values from prepare, so both architectures and a
+        # re-run of failed jobs carry the same ones (SPEC 8.3 step 1); the gate uses now.
+        if [[ -n "${INPUT_CREATED}" || -n "${INPUT_EPOCH}" ]]; then
+          [[ "${INPUT_EPOCH}" =~ ^[0-9]+$ ]] || { printf 'bad source_date_epoch: %s\n' "${INPUT_EPOCH}" >&2; exit 1; }
+          [[ "$(date -u -d "@${INPUT_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)" == "${INPUT_CREATED}" ]] ||
+            { printf 'created %s is not source_date_epoch %s\n' "${INPUT_CREATED}" "${INPUT_EPOCH}" >&2; exit 1; }
+          epoch="${INPUT_EPOCH}"
+        else
+          epoch="$(date -u +%s)"
+        fi
+        {
+          printf 'PLATFORMS=%s\n' "${PLATFORM}"
+          printf 'REGISTRY=%s\n' "${REGISTRY}"
+          printf 'TAG=latest\n'
+          printf 'REVISION=%s\n' "${GITHUB_SHA}"
+          printf 'CREATED=%s\n' "$(date -u -d "@${epoch}" +%Y-%m-%dT%H:%M:%SZ)"
+          printf 'SOURCE_DATE_EPOCH=%s\n' "${epoch}"
+        } >> "${GITHUB_ENV}"
+        # an empty VERSION would override the bake default, so it is exported only when set
+        if [[ -n "${OSNOVA_VERSION:-}" ]]; then
+          printf 'VERSION=%s\n' "${OSNOVA_VERSION}" >> "${GITHUB_ENV}"
+        elif [[ "${MODE}" == publish ]]; then
+          printf 'publish mode needs OSNOVA_VERSION\n' >&2
+          exit 1
+        fi
+
+    - name: Compute the bake overrides
+      id: cfg
+      shell: bash
+      env:
+        PLATFORM: ${{ inputs.platform }}
+        CACHE: ${{ inputs.cache }}
+        MODE: ${{ inputs.mode }}
+        REGISTRY: ${{ inputs.registry }}
+      run: |
+        set -euo pipefail
+        arch="${PLATFORM##*/}"
+        list="$(bash tools/resolve_bases.sh --list)"
+        [[ -n "${list}" ]] || { printf 'the resolver listed no images\n' >&2; exit 1; }
+        {
+          printf 'set<<EOF\n'
+          # the release applies upstream patches: a cached upgrade layer would skip them (SPEC 8.3)
+          if [[ "${CACHE}" == 'true' ]]; then
+            # one scope per target: sharing one would let the exports overwrite each other
+            while read -r name _; do
+              printf '%s.cache-from=type=gha,scope=gate-%s-%s\n' "${name}" "${arch}" "${name}"
+              printf '%s.cache-to=type=gha,scope=gate-%s-%s,mode=max\n' "${name}" "${arch}" "${name}"
+            done <<<"${list}"
+          fi
+          printf 'EOF\n'
+          # the push (SPEC 8.3 step 5): per target, the bake file's tag cleared and the
+          # untagged name given to the output, because buildx refuses to push a tagged
+          # ref by digest; the digest is the only name the pushed image gets
+          printf 'push<<EOF\n'
+          if [[ "${MODE}" == publish ]]; then
+            while read -r name _; do
+              printf '%s.tags=\n' "${name}"
+              out="type=image,name=${REGISTRY}/${name}"
+              printf '%s.output=%s,push-by-digest=true,name-canonical=true,push=true\n' "${name}" "${out}"
+            done <<<"${list}"
+          fi
+          printf 'EOF\n'
+        } >> "${GITHUB_OUTPUT}"
+
+    # bake-action runs inside the Actions runtime, so type=gha has its token.
+    - name: Build every image
+      uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
+      with:
+        source: .
+        load: true
+        no-cache: ${{ inputs.mode == 'publish' }}
+        set: ${{ steps.cfg.outputs.set }}
+
+    # One JSON scan per image (SPEC 8.3 step 3): a HIGH or CRITICAL finding with a
+    # fix version fails; the ones without are summarised and never fail.
+    - name: Scan and boot every image
+      shell: bash
+      env:
+        REGISTRY: ${{ inputs.registry }}
+      run: |
+        set -euo pipefail
+        list="$(bash tools/resolve_bases.sh --list)"
+        [[ -n "${list}" ]] || { printf 'the resolver listed no images\n' >&2; exit 1; }
+        reports="$(mktemp -d)"
+        while read -r name _; do
+          printf '::group::%s\n' "${name}"
+          report="${reports}/${name}.json"
+          trivy image --image-src docker --scanners vuln --severity HIGH,CRITICAL --format json --output "${report}" \
+            "${REGISTRY}/${name}:latest"
+          fixable="$(jq -r '[.Results[]?.Vulnerabilities[]? | select((.FixedVersion // "") != "")
+            | "\(.VulnerabilityID) \(.PkgName) \(.InstalledVersion) -> \(.FixedVersion)"] | unique | .[]' "${report}")"
+          unfixed="$(jq -r '[.Results[]?.Vulnerabilities[]? | select((.FixedVersion // "") == "")
+            | .VulnerabilityID] | unique | join(" ")' "${report}")"
+          count="$(wc -w <<<"${unfixed}" | tr -d ' ')"
+          printf '%s: %s unfixed HIGH or CRITICAL: %s\n' "${name}" "${count}" "${unfixed:-none}"
+          if [[ -n "${fixable}" ]]; then
+            printf '::error::%s has fixable HIGH or CRITICAL vulnerabilities\n' "${name}"
+            printf '%s\n' "${fixable}"
+            printf '::endgroup::\n'
+            exit 1
+          fi
+          OSNOVA_SMOKE_IMAGE="${REGISTRY}/${name}:latest" bash tests/smoke.sh
+          printf '::endgroup::\n'
+        done <<<"${list}"
+
+    # The registry login exists from here on, after every image was scanned
+    # and booted (SPEC 4.1), until the logout after the assert below; the job
+    # token itself exists for the whole job (SPEC 4.2).
+    - name: Log in to the registry
+      if: inputs.mode == 'publish'
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      with:
+        registry: ghcr.io
+        username: ${{ inputs.registry_username }}
+        password: ${{ inputs.registry_password }}
+
+    # No no-cache here, by design: the builder's cache holds the layers built
+    # and verified above, so this bake only exports and the pushed bytes are
+    # the scanned and booted ones. push stays unset: the per-target output lines
+    # computed above are the one output.
+    - name: Push by digest with SBOM and provenance
+      id: push
+      if: inputs.mode == 'publish'
+      uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
+      with:
+        source: .
+        provenance: mode=max
+        sbom: generator=docker/buildkit-syft-scanner:1.12.0@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+        set: ${{ steps.cfg.outputs.push }}
+
+    - name: Collect the pushed digests
+      id: digests
+      if: inputs.mode == 'publish'
+      shell: bash
+      env:
+        METADATA: ${{ steps.push.outputs.metadata }}
+      run: |
+        set -euo pipefail
+        digests="$(jq -c 'map_values(.["containerimage.digest"])' <<<"${METADATA}")"
+        jq -e 'all(.[]; type == "string" and startswith("sha256:"))' <<<"${digests}" >/dev/null ||
+          { printf 'a pushed digest is missing: %s\n' "${digests}" >&2; exit 1; }
+        printf 'digests=%s\n' "${digests}" >> "${GITHUB_OUTPUT}"
+
+    # The pushed image is the scanned one (SPEC 8.3 step 5): the push metadata names
+    # the per-architecture index, not a config digest, so the config is read from the
+    # pushed manifest. `docker image inspect` .Id is the config digest under the
+    # classic image store and the manifest digest under the containerd image store;
+    # the check accepts either (a manifest digest match holds the config it names).
+    - name: Assert the pushed image is the scanned image
+      if: inputs.mode == 'publish'
+      shell: bash
+      env:
+        DIGESTS: ${{ steps.digests.outputs.digests }}
+        PLATFORM: ${{ inputs.platform }}
+        REGISTRY: ${{ inputs.registry }}
+      run: |
+        set -euo pipefail
+        arch="${PLATFORM##*/}"
+        names="$(jq -r 'keys[]' <<<"${DIGESTS}")"
+        [[ -n "${names}" ]] || { printf 'no pushed image to check\n' >&2; exit 1; }
+        while read -r name; do
+          index="$(jq -r --arg n "${name}" '.[$n]' <<<"${DIGESTS}")"
+          manifest="$(docker buildx imagetools inspect --raw "${REGISTRY}/${name}@${index}" | jq -r --arg a "${arch}" '
+            [.manifests[] | select(.platform.os == "linux" and .platform.architecture == $a)]
+            | if length == 1 then .[0].digest else empty end')"
+          [[ "${manifest}" =~ ^sha256:[0-9a-f]{64}$ ]] ||
+            { printf '%s: no single %s manifest in %s\n' "${name}" "${PLATFORM}" "${index}" >&2; exit 1; }
+          config="$(docker buildx imagetools inspect --raw "${REGISTRY}/${name}@${manifest}" | jq -r '.config.digest')"
+          loaded="$(docker image inspect "${REGISTRY}/${name}:latest" --format '{{.Id}}')"
+          if [[ "${loaded}" != "${config}" && "${loaded}" != "${manifest}" ]]; then
+            printf '::error::%s: pushed config %s (manifest %s) is not the scanned image %s\n' \
+              "${name}" "${config}" "${manifest}" "${loaded}"
+            exit 1
+          fi
+          printf '%s: pushed config %s is the scanned image\n' "${name}" "${config}"
+        done <<<"${names}"
+
+    # The credential ends with the push (SPEC 8.3 step 5), not at the end of the job.
+    - name: Log out of the registry
+      if: inputs.mode == 'publish'
+      shell: bash
+      run: |
+        docker logout ghcr.io

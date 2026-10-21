@@ -1,0 +1,27 @@
+# Claude Code writes runtime state into this tree; track only authored
+# configuration.
+*
+!.gitignore
+!settings.json
+!skills/
+!skills/**
+!agents/
+!agents/**
+!tools/
+!tools/**
+skills/synced/
+skills/.trash/
+
+# Secret patterns re-asserted after the allowlist: a nested `!x/**` would
+# otherwise beat the root .gitignore (last matching pattern wins).
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
+settings.local.json
