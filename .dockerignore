@@ -1,0 +1,20 @@
+# Nothing that is not the build input: VCS, secrets, local state, caches.
+.git
+.gitignore
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+node_modules
+__pycache__
+.venv
+.terraform
+*.tfstate*
+.tmp
+.dev
+Dockerfile*
+.dockerignore

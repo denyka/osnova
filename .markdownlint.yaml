@@ -1,0 +1,10 @@
+default: true
+# Line length: prose wraps at the editor, tables and URLs do not.
+MD013: false
+# Same heading under different parents is fine; flag siblings only.
+MD024:
+  siblings_only: true
+# Inline HTML: generated READMEs carry anchors.
+MD033: false
+# A file may start with front matter or a table rather than an H1.
+MD041: false

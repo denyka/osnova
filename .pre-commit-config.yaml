@@ -1,0 +1,60 @@
+minimum_pre_commit_version: "4.0.0"
+
+repos:
+  - repo: https://github.com/hadolint/hadolint
+    rev: 2eece55955ced00200be9729e9728cb7dacca505  # frozen: v2.15.1
+    hooks:
+      - id: hadolint
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e  # frozen: v8.30.1
+    hooks:
+      # Commit-time: staged diff only. CI runs the two manual hooks below
+      # so a bypassed local hook still fails (SPEC 11.2).
+      - id: gitleaks
+      - id: gitleaks
+        alias: gitleaks_history
+        name: gitleaks (full git history)
+        entry: gitleaks git --redact
+        pass_filenames: false
+        stages: [manual]
+      - id: gitleaks
+        alias: gitleaks_tree
+        name: gitleaks (working tree)
+        entry: gitleaks dir --redact .
+        pass_filenames: false
+        stages: [manual]
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: a6564f5d57444e123433a5c9af733e3975c77229  # frozen: v0.11.0.1-1
+    hooks:
+      - id: shellcheck
+  - repo: https://github.com/adrienverge/yamllint
+    rev: cba56bcde1fdd01c1deb3f945e69764c291a6530  # frozen: v1.38.0
+    hooks:
+      - id: yamllint
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: 5b5dddc4fb0f83c3ea1fc5616fa63e115dce83e0  # frozen: v0.49.1
+    hooks:
+      - id: markdownlint
+  - repo: https://github.com/rhysd/actionlint
+    rev: 914e7df21a07ef503a81201c76d2b11c789d3fca  # frozen: v1.7.12
+    hooks:
+      - id: actionlint
+  - repo: local
+    hooks:
+      - id: tests
+        name: make test
+        entry: bash tests/run.sh
+        language: system
+        pass_filenames: false

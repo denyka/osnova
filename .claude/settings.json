@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "autoMemoryEnabled": false,
+  "enabledPlugins": {},
+  "permissions": {
+    "allow": [
+      "Bash(make lint)",
+      "Bash(make test)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)"
+    ],
+    "deny": [
+      "Bash(* --no-verify*)",
+      "Bash(* --no-gpg-sign*)",
+      "Bash(*core.hooksPath*)",
+      "Bash(*commit.gpgsign=false*)",
+      "Bash(git push *)",
+      "Bash(git -C * push *)",
+      "Bash(git -c * push *)",
+      "Bash(git tag *)",
+      "Bash(gh pr create*)",
+      "Bash(gh pr merge*)",
+      "Bash(gh release *)",
+      "Bash(glab mr create*)",
+      "Bash(glab mr merge*)",
+      "Bash(glab release *)",
+      "Bash(docker push*)",
+      "Bash(docker buildx imagetools create*)",
+      "Bash(cosign sign*)",
+      "Bash(gh workflow run*)",
+      "Bash(docker image push*)",
+      "Bash(docker buildx build*)",
+      "Bash(docker buildx bake*--push*)",
+      "Bash(docker buildx bake*push=true*)",
+      "Bash(bash tools/retain.sh*)",
+      "Bash(tools/retain.sh*)",
+      "Bash(gh api*DELETE*)",
+      "Read(//**/.env)",
+      "Read(//**/.env.*)",
+      "Read(//**/*.pem)",
+      "Read(//**/*.key)",
+      "Read(//**/settings.local.json)"
+    ]
+  }
+}

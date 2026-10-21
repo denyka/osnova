@@ -1,0 +1,32 @@
+# Development process and scratch (SPEC 3.10, 5)
+.dev/
+.tmp/
+# OS noise
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+*:Zone.Identifier
+
+# Editors
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.sublime-*
+# Secrets (class S, SPEC 4.2) — never tracked, archives only
+*.pem
+*.key
+*.p12
+*.pfx
+.env
+.env.*
+# placeholder templates are tracked on purpose (SPEC 11.2)
+!.env*.example
+!.env*.j2
+!.env*.tmpl
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
