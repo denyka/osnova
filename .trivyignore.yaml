@@ -4,4 +4,4 @@ misconfigurations:
     paths:
       - el/Dockerfile
       - deb/Dockerfile
-    statement: An init image runs as root by design (SPEC 14); no USER instruction.
+    statement: An init image runs as root by design (HQ SPEC 14); no USER instruction, stated above its final stage.

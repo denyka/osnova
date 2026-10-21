@@ -7,6 +7,11 @@ the versioning scheme is the one `docs/SPEC.md` states.
 
 ## [Unreleased]
 
+### Changed
+
+- The lint workflow is HQ's template verbatim again: the hadolint step comes from the template, so the section 14 row that declared the added step is gone.
+- The base resolved at build, the inline package-rule ignores, the root init image and its Trivy exemption are declared as HQ's upstream-tracking class (SPEC 1) instead of four deviations; the statement `# init image: PID 1 runs as root` stands above each `FROM scratch`, and the dead `DL3005` ignore is dropped.
+
 ## [2026.10.21] - 2026-10-21
 
 ### Added

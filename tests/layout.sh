@@ -32,7 +32,7 @@ for d in 'gh release *' 'docker push*' 'docker image push*' 'docker buildx build
          'cosign sign*' 'gh workflow run*' 'bash tools/retain.sh*' 'tools/retain.sh*' 'gh api*DELETE*'; do
     if grep -qF "\"Bash(${d})\"" .claude/settings.json; then t_ok "denied: ${d}"; else t_fail "not denied: ${d}"; fi
 done
-# the config scan ignores exactly DS-0002: an init image runs as root by design (SPEC 14)
+# the config scan ignores exactly DS-0002: an init image runs as root by design (HQ SPEC 14)
 if [[ ! -e .trivyignore ]]; then t_ok ".trivyignore absent (replaced by .trivyignore.yaml)"; else t_fail ".trivyignore present"; fi
 t_assert_grep 'AVD-DS-0002' .trivyignore.yaml
 t_assert_eq "1" "$(grep -c 'AVD-' .trivyignore.yaml)" ".trivyignore.yaml names one check"

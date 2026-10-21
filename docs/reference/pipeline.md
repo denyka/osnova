@@ -73,8 +73,9 @@ Steps of `verify`:
    target and architecture.
 5. `trivy config --ignorefile .trivyignore.yaml --exit-code 1 --severity HIGH,CRITICAL images`,
    once, on amd64; Trivy does not load the YAML ignore file by itself, so the
-   flag names it. The file waives `AVD-DS-0002` (no `USER`) for `images/*/Dockerfile`: an init image
-   runs as root by design ([SPEC 14](../SPEC.md)).
+   flag names it. The file waives `AVD-DS-0002` (no `USER`) for the two Dockerfiles that state
+   `# init image: PID 1 runs as root` above their final stage: an init image runs as root by design
+   (HQ SPEC 14, the upstream-tracking class of [SPEC 1](../SPEC.md)).
 
 ## release.yml
 

@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Version | 2026.10.21 |
-| Status | APPROVED by owner, 2026-10-19; revision 2026-10-20 proposed after the first review and revision 2026-10-21 after the first gate run, both pending the owner's approval |
+| Status | APPROVED by owner, 2026-10-19; revision 2026-10-20 proposed after the first review and revision 2026-10-21 after the first gate run, both pending the owner's approval; the upstream-tracking declaration of 2026-10-21 (HQ SPEC 14) approved by owner |
 | Owner | Denys Neichev |
 | Scope | The whole `osnova` repository, the images it publishes and the pipeline that publishes them |
 
@@ -34,6 +34,13 @@ images that boot real systemd as PID 1. They serve two audiences:
 Success means a stranger can pull an image, verify its signature and
 provenance, read one page and use it correctly, and that the repository
 itself reads as a model of how a public image project is built and run.
+
+Upstream-tracking images: every image is its upstream base rebuilt with
+the upstream's own fixes on a schedule (HQ SPEC 14). The declaration is
+what lets the base be a tag resolved to a digest at build and recorded
+(section 8.4), the package rules be ignored inline with their reason
+(section 6.3), and the init image run as root with the statement above
+its final stage and the Trivy exemption scoped to it (section 7).
 
 ### 1.1 Out of scope
 
@@ -206,7 +213,7 @@ osnova/
 │   ├── trivy.sha256           the pinned Trivy version and its tarball digests (section 8.9)
 │   ├── dependabot.yml, CODEOWNERS, ISSUE_TEMPLATE/, pull_request_template.md
 │   └── requirements.txt       the pinned pre-commit for CI
-├── .trivyignore.yaml          the one declared Trivy exemption, scoped and stated (section 14)
+├── .trivyignore.yaml          the init-image Trivy exemption, scoped and stated (HQ SPEC 14)
 ├── .claude/                   settings and skills (section 13)
 ├── .dev/, .tmp/               gitignored process and scratch
 ├── Makefile                   self-documenting entry points
@@ -294,7 +301,9 @@ every line of it:
   `CMD ["/sbin/init"]`.
 - Static OCI labels: description, licenses `MIT`, vendor `denyka`. The
   per-image labels come from the bake file and the pipeline (section 6.5).
-- No `USER` instruction: an init image runs as root (section 14).
+- No `USER` instruction, and the statement `# init image: PID 1 runs as root`
+  directly above `FROM scratch`: an init image runs as root, declared per
+  file (HQ SPEC 14).
 - No PAM or sudoers change, and one shadow change, in the `el` stage
   only: `/etc/shadow` is set to mode 0600. The base ships it as 0000,
   readable only through `CAP_DAC_READ_SEARCH`; pam_unix has run the
@@ -814,18 +823,17 @@ as an amendment so the fleet audit stops reporting it:
 
 | HQ rule | osnova | Why | Amendment proposed |
 | --- | --- | --- | --- |
-| The final stage runs as a named non-root user | no `USER`; the image is an init | PID 1 must be root to run systemd; consumers add users | an exemption for init images, stated in the Dockerfile |
 | Every workflow holds `contents: read` and pushes nothing | the release and watch workflows hold the scopes of 8.9 and 9 | a publishing repository publishes; scopes are per job and minimal | accepted in HQ SPEC 11.2 as the publishing shape (no pull request trigger, `contents: read` at the top, per-job `packages`, `id-token`, `attestations`, `contents: write`); still outside that set and reported by HQ's audit: `actions: read` and `issues: write` in the failure report, `actions: write` in the watch's dispatch job |
-| Every base image pinned by digest in the tree | base tags in `matrix.yml`, digests resolved at build and recorded in the release | an unattended pipeline cannot commit pin bumps without a bot credential and a branch bypass, which security first refuses (ADR 0004) | the rule accepts a resolved-and-recorded digest where the release record is signed |
 | The SPEC version is the repository version and a release bumps both | the SPEC version is its revision date and no release bumps it (section 17) | a release changes no interface, so the repository has no version but the date of each build | calendar versioning is accepted (HQ SPEC 14); the SPEC-version rule itself stands and this row remains |
 | A `docker_bake` repository carries HQ's `workflow_docker_bake.yml` as `docker_bake.yml` | not carried; `ci.yml` is its superset on both architectures | the template would rebuild every image on every pull request for an answer `ci.yml` already gives (principle 9) | the rule accepts a project workflow that carries the template's steps, listed: hadolint, Trivy configuration scan, bake, image scan |
-| Unpinned package rules are errors (hadolint DL3005, DL3008, DL3041) | ignored inline in both Dockerfiles with the reason beside them | the build exists to apply upstream fixes on a base whose digest is recorded; a pinned package version would hold the fix back | an exemption for base images that record the base digest |
-| Trivy configuration findings are not ignored | `AVD-DS-0002` (no `USER`) is ignored for `images/*/Dockerfile` in `.trivyignore.yaml` with the statement beside it | the same exemption as the `USER` row above, where Trivy checks it | the same amendment |
 | Runners pinned to one OS release | HQ's `lint.yml` runs on `ubuntu-latest` | the workflow is carried verbatim; `tests/workflows.sh` exempts it from this check; its downloads are now verified against `.github/tools.sha256` | declined in HQ: a pinned runner label rots with no bump mechanism |
 
-Everything else in HQ's docker, shell, git, GitHub Actions and
-documentation standards applies unchanged. The amendments are proposed
-in `.dev/hq_amendments.md` until HQ carries them.
+The base resolved at build, the inline package-rule ignores, the root
+init image and its Trivy exemption are no longer deviations: HQ carries
+them as the upstream-tracking class, declared in section 1 and checked by
+HQ's project audit. Everything else in HQ's docker, shell, git, GitHub
+Actions and documentation standards applies unchanged. The amendments are
+proposed in `.dev/hq_amendments.md` until HQ carries them.
 
 ## 15. Invariants
 

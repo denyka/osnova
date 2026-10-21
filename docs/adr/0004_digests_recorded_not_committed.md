@@ -21,4 +21,4 @@ HQ pins every base image by digest in the tree. An unattended pipeline would hav
 
 - The tree never shows which base digest the last release used; the record does, and the record is signed as a blob by the release workflow identity and published on an immutable release, so the pin it replaces is as trustworthy as the tree would have been ([SPEC 8.4](../SPEC.md)).
 - A rebuild from a given commit may resolve a newer base; the record names the one that was used.
-- A declared deviation from HQ's pinning rule ([SPEC 14](../SPEC.md)).
+- Accepted by HQ as the upstream-tracking class (HQ SPEC 14), declared in [SPEC 1](../SPEC.md); no longer a deviation.

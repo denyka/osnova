@@ -16,6 +16,8 @@ for family in el deb; do
     t_assert_not_grep '^FROM \$\{BASE_IMAGE\}$' "${f}"
     t_assert_eq 2 "$(grep -cE '^FROM ' "${f}")" "${f}: two stages"
     t_assert_eq "FROM scratch" "$(grep -E '^FROM ' "${f}" | tail -1)" "${f}: the last stage is scratch"
+    # the init-image statement stands directly above the final stage (HQ SPEC 14, SPEC 6.3)
+    t_assert_eq "# init image: PID 1 runs as root" "$(grep -B1 -E '^FROM scratch$' "${f}" | head -1)" "${f}: the init statement above FROM scratch"
     t_assert_grep '^COPY --from=build / /$' "${f}"
     # scratch carries no config: PATH and HOME are explicit
     t_assert_eq "${final_env}" "$(grep -E '^ENV ' "${f}")" "${f}: the one ENV line is exactly PATH and HOME"

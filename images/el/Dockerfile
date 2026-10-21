@@ -46,6 +46,7 @@ RUN for unit in \
 # One layer and nothing under it: the final stage starts from scratch, so the
 # image is exactly the build stage's tree. Superseded package payloads and
 # anything the build stage deleted never ship (the base layer is not kept).
+# init image: PID 1 runs as root
 FROM scratch
 # The whole tree is the point: it flattens the patched filesystem into one layer.
 # hadolint ignore=DL3067
