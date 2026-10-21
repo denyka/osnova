@@ -8,13 +8,13 @@ ARG DEBIAN_FRONTEND=noninteractive
 # Patch the pinned base, then the baseline of SPEC 6.2. Package versions are
 # deliberately unpinned and the upgrade is deliberate: the build exists to
 # apply upstream fixes on top of a base whose digest is recorded with the
-# release (DL3005, DL3008). Base quirks of SPEC 6.2: ubuntu:26.04 ships
+# release (DL3008). Base quirks of SPEC 6.2: ubuntu:26.04 ships
 # pebble, an unmanaged binary outside apt's reach, and the Ubuntu bases ship
 # an ubuntu user at uid 1000; both are removed, and the final stage is this
 # stage's tree alone, so deleting them here deletes them from the image.
 # Stripping keeps every copyright file (redistribution needs it) and empties
 # the machine id so systemd generates a fresh one on each first boot (6.3).
-# hadolint ignore=DL3005,DL3008
+# hadolint ignore=DL3008
 RUN apt-get update \
     && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends systemd systemd-sysv python3 python3-apt sudo ca-certificates \
@@ -48,6 +48,7 @@ RUN for unit in \
 # One layer and nothing under it: the final stage starts from scratch, so the
 # image is exactly the build stage's tree. Superseded package payloads and
 # anything the build stage deleted never ship (the base layer is not kept).
+# init image: PID 1 runs as root
 FROM scratch
 # The whole tree is the point: it flattens the patched filesystem into one layer.
 # hadolint ignore=DL3067
