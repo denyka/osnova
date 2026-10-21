@@ -65,10 +65,9 @@ jobs:
           tar -xzf "trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" trivy
           sudo install -m 0755 terraform-docs trivy /usr/local/bin/
 
-      # The hadolint hook shells out to a binary the runner lacks; HQ installs
-      # it only in its bake workflow, which this repository does not carry
-      # (SPEC 14). Installed where a Dockerfile exists, pinned, and verified
-      # against the sha256 carried in .github/tools.sha256.
+      # The hadolint hook is language: system and the runner lacks the binary:
+      # installed where a Dockerfile exists, the same pin and digest as the
+      # docker workflows carry.
       - name: Install hadolint
         if: hashFiles('**/Dockerfile') != ''
         env:
