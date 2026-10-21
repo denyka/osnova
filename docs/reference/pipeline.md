@@ -34,10 +34,9 @@ generator image by tag and digest, because BuildKit writes the provenance.
 
 ## lint.yml
 
-HQ's lint workflow with one added step ([SPEC 14](../SPEC.md)): hadolint,
-pinned and verified against `.github/tools.sha256`, installed where a
-Dockerfile exists, because the hadolint hook shells out to a binary the
-runner does not ship.
+HQ's lint workflow, verbatim. It installs hadolint, pinned and verified
+against `.github/tools.sha256`, where a Dockerfile exists, because the
+hadolint hook shells out to a binary the runner does not ship.
 
 | Item | Value |
 | --- | --- |

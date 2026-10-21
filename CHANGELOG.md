@@ -7,6 +7,8 @@ the versioning scheme is the one `docs/SPEC.md` states.
 
 ## [Unreleased]
 
+## [2026.10.21] - 2026-10-21
+
 ### Added
 
 - The six-image matrix and the family Dockerfiles for AlmaLinux, Debian and Ubuntu.

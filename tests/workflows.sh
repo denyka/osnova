@@ -18,7 +18,7 @@ t_assert_file "${pin}"
 # all: every workflow plus the action, HQ's lint workflow included (universal rules:
 # pins, no emulation, no privileged trigger, no expression inside a run block).
 all=("${wfs[@]}" "${action}")
-# own: the project's files. lint.yml is HQ's but for the hadolint step (SPEC 14), so it is exempt
+# own: the project's files. lint.yml is HQ's verbatim (SPEC 10, 14), so it is exempt
 # from the permitted third-party set, persist-credentials, the pinned runners, the
 # BuildKit pin, artifact retention and the Trivy pin rules.
 own=("${action}")
@@ -109,7 +109,7 @@ done
 # top-level permissions: every workflow is exactly contents: read
 top() { awk '/^permissions:/{p=1;next} p&&/^([^ ]|$)/{p=0} p{print}' "$1" | sed 's/^  //' | paste -sd' ' -; }
 t_assert_eq "contents: read" "$(top .github/workflows/lint.yml)" "lint: contents: read"
-# the hadolint step of SPEC 14: where a Dockerfile exists, the x86_64 binary verified against tools.sha256
+# HQ's hadolint step: where a Dockerfile exists, the x86_64 binary verified against tools.sha256
 t_assert_grep "^        if: hashFiles\('\*\*/Dockerfile'\) != ''$" .github/workflows/lint.yml
 t_assert_grep 'hadolint-Linux-x86_64' .github/workflows/lint.yml
 job_has .github/workflows/lint.yml pre-commit 'sha256sum --check --strict --ignore-missing "\$\{GITHUB_WORKSPACE\}/\.github/tools\.sha256"'

@@ -197,7 +197,7 @@ osnova/
 ├── docs/                      SPEC, security, ADRs, how-tos, reference
 ├── .github/
 │   ├── workflows/
-│   │   ├── lint.yml           HQ's lint workflow plus the hadolint step (section 14)
+│   │   ├── lint.yml           HQ's lint workflow, verbatim
 │   │   ├── ci.yml             native build, scan and boot on pull requests
 │   │   ├── release.yml        the unattended release (section 8)
 │   │   └── watch.yml          daily drift and CVE watch (section 9)
@@ -661,8 +661,8 @@ the provenance. Every other step is a shell step over tools the runner
 ships or the workflow installs: Trivy is downloaded at the version and
 verified against the sha256 per architecture that `.github/trivy.sha256`
 pins in the tree, the one place its version lives. HQ's lint workflow
-carries its own pinned set, and the hadolint step of section 14 verifies
-its binary against `.github/tools.sha256` the same way.
+carries its own pinned set, hadolint included, verified against
+`.github/tools.sha256` the same way.
 
 ### 8.10 Runner usage
 
@@ -740,7 +740,7 @@ the rest of the ruleset.
 
 | Workflow | Source | What it proves |
 | --- | --- | --- |
-| `lint.yml` | HQ template plus the hadolint step of section 14 | every pre-commit hook including hadolint, gitleaks over tree and history, frozen hook revisions, `make test` |
+| `lint.yml` | HQ template, verbatim | every pre-commit hook including hadolint, gitleaks over tree and history, frozen hook revisions, `make test` |
 | `ci.yml` | this repository | one job per architecture, native: resolve, build, Trivy gate, smoke suite under both contracts for every image; nothing pushed |
 
 `watch.yml` and `release.yml` never run on a pull request. HQ's
@@ -819,10 +819,9 @@ as an amendment so the fleet audit stops reporting it:
 | Every base image pinned by digest in the tree | base tags in `matrix.yml`, digests resolved at build and recorded in the release | an unattended pipeline cannot commit pin bumps without a bot credential and a branch bypass, which security first refuses (ADR 0004) | the rule accepts a resolved-and-recorded digest where the release record is signed |
 | The SPEC version is the repository version and a release bumps both | the SPEC version is its revision date and no release bumps it (section 17) | a release changes no interface, so the repository has no version but the date of each build | calendar versioning is accepted (HQ SPEC 14); the SPEC-version rule itself stands and this row remains |
 | A `docker_bake` repository carries HQ's `workflow_docker_bake.yml` as `docker_bake.yml` | not carried; `ci.yml` is its superset on both architectures | the template would rebuild every image on every pull request for an answer `ci.yml` already gives (principle 9) | the rule accepts a project workflow that carries the template's steps, listed: hadolint, Trivy configuration scan, bake, image scan |
-| HQ's `lint.yml` is carried verbatim | carried with one added step: hadolint installed where a Dockerfile exists, pinned by version and verified against `.github/tools.sha256` | the hadolint hook shells out to a binary the runner lacks; HQ installs it only in `docker_bake.yml`, which this repository does not carry (the row above), so the verbatim workflow fails on every pull request | the lint template gains the step under `hashFiles('**/Dockerfile')`, beside its tflint and terraform-docs steps |
 | Unpinned package rules are errors (hadolint DL3005, DL3008, DL3041) | ignored inline in both Dockerfiles with the reason beside them | the build exists to apply upstream fixes on a base whose digest is recorded; a pinned package version would hold the fix back | an exemption for base images that record the base digest |
 | Trivy configuration findings are not ignored | `AVD-DS-0002` (no `USER`) is ignored for `images/*/Dockerfile` in `.trivyignore.yaml` with the statement beside it | the same exemption as the `USER` row above, where Trivy checks it | the same amendment |
-| Runners pinned to one OS release | HQ's `lint.yml` runs on `ubuntu-latest` | the workflow is HQ's but for the hadolint step; `tests/workflows.sh` exempts it from this check; its downloads are now verified against `.github/tools.sha256` | declined in HQ: a pinned runner label rots with no bump mechanism |
+| Runners pinned to one OS release | HQ's `lint.yml` runs on `ubuntu-latest` | the workflow is carried verbatim; `tests/workflows.sh` exempts it from this check; its downloads are now verified against `.github/tools.sha256` | declined in HQ: a pinned runner label rots with no bump mechanism |
 
 Everything else in HQ's docker, shell, git, GitHub Actions and
 documentation standards applies unchanged. The amendments are proposed
